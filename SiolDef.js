@@ -1,355 +1,41 @@
-javascript:(()=>{/* ===== Defense Cutter — MVP v2.2 (no 'm' vars) ===== */
+javascript:(()=>{/* ===== Defense Cutter — v2.4 (fix: form submit, slider) ===== */
 
-const SEL = {
-  // Incomings
-  incomingRow: '#incomings_table tr.nowrap',
-  destCell: 'td:nth-child(2)',           // "(513|369) ..."
-  arrivalCell: 'td:nth-child(6)',        // "today at 21:44:20:" + <span class="grey small">159</span>
-  arrivalMs: '.grey.small',              // μόνο τα ms
-  addBtnHost: 'td:last-child',
-  // Confirm
-  sendBtn: '#troop_confirm_submit'
-};
+const SEL={incomingRow:'#incomings_table tr.nowrap',destCell:'td:nth-child(2)',arrivalCell:'td:nth-child(6)',arrivalMs:'.grey.small',addBtnHost:'td:last-child',sendBtn:'#troop_confirm_submit'};
 
-// ---------- helpers ----------
-const $  = (s,d=document)=>d.querySelector(s);
-const $$ = (s,d=document)=>Array.from(d.querySelectorAll(s));
-const sleep = ms=>new Promise(r=>setTimeout(r,ms));
-const bc = new BroadcastChannel('defcutter');
+const $=(s,d=document)=>d.querySelector(s);const $$=(s,d=document)=>Array.from(d.querySelectorAll(s));const sleep=ms=>new Promise(r=>setTimeout(r,ms));const bc=new BroadcastChannel('defcutter');
 
-// ---------- clock sync (NTP-like) ----------
-const Clock=(()=>{let off=0,jit=0,ew=null;const alpha=.30;
-  async function sample(){
-    const t0=performance.now();
-    const r=await fetch(`/game.php?screen=overview&t=${Math.random()}`,{cache:'no-store'});
-    const t1=performance.now();
-    const date=r.headers.get('Date'); if(!date) throw 0;
-    const srv=Date.parse(date), rtt=t1-t0;
-    const clientAtRecv=performance.timeOrigin+t1;
-    const est=srv + rtt/2; // mid-flight
-    return {off:est-clientAtRecv, rtt};
-  }
-  async function calibrate(n=6){
-    const xs=[];
-    for(let i=0;i<n;i++){ try{ xs.push(await sample()); }catch{} await sleep(60+Math.random()*40); }
-    xs.sort((a,b)=>a.rtt-b.rtt);
-    const keep=xs.slice(0,Math.max(2,Math.ceil(xs.length*.7)));
-    const o=keep.reduce((a,x)=>a+x.off,0)/keep.length;
-    const r=keep.reduce((a,x)=>a+x.rtt,0)/keep.length;
-    ew = (ew==null)? o : (alpha*o + (1-alpha)*ew);
-    off=ew; jit=r/2; return {off,jit};
-  }
-  const srvNow=()=>performance.timeOrigin+performance.now()+off;
-  return { cal:calibrate, now:srvNow, get off(){return off}, get jit(){return jit} };
-})();
+const Clock=(()=>{let off=0,jit=0,ew=null;const alpha=.30;async function sample(){const t0=performance.now();const r=await fetch(`/game.php?screen=overview&t=${Math.random()}`,{cache:'no-store'});const t1=performance.now();const date=r.headers.get('Date');if(!date) throw 0;const srv=Date.parse(date),rtt=t1-t0;const clientAtRecv=performance.timeOrigin+t1;const est=srv+rtt/2;return{off:est-clientAtRecv,rtt}}async function calibrate(n=6){const xs=[];for(let i=0;i<n;i++){try{xs.push(await sample())}catch{}await sleep(60+Math.random()*40)}xs.sort((a,b)=>a.rtt-b.rtt);const keep=xs.slice(0,Math.max(2,Math.ceil(xs.length*.7)));const o=keep.reduce((a,x)=>a+x.off,0)/keep.length;const r=keep.reduce((a,x)=>a+x.rtt,0)/keep.length;ew=(ew==null)?o:(alpha*o+(1-alpha)*ew);off=ew;jit=r/2;return{off,jit}}const srvNow=()=>performance.timeOrigin+performance.now()+off;return{cal:calibrate,now:srvNow,get off(){return off},get jit(){return jit}}})();
 
-// ---------- audio ----------
-const Beep=(()=>{let ctx;function ping(d=.06,f=880){try{ctx=ctx||new (AudioContext||webkitAudioContext)();const osc=ctx.createOscillator(),gain=ctx.createGain();osc.connect(gain);gain.connect(ctx.destination);osc.frequency.value=f;gain.gain.value=.05;osc.start();setTimeout(()=>osc.stop(),d*1000);}catch{}}return{ping}})();
+const Beep=(()=>{let ctx;function ping(d=.06,f=880){try{ctx=ctx||new (AudioContext||webkitAudioContext)();const osc=ctx.createOscillator(),g=ctx.createGain();osc.connect(g);g.connect(ctx.destination);osc.frequency.value=f;g.gain.value=.05;osc.start();setTimeout(()=>osc.stop(),d*1000)}catch{}}return{ping}})();
 
-// ---------- parse helpers ----------
-function parseCoords(str){
-  const matchCoords = String(str).match(/(\d{3})\|(\d{3})/);
-  return matchCoords ? {x:+matchCoords[1], y:+matchCoords[2]} : null;
-}
-function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+function parseCoords(str){const m=String(str).match(/(\d{3})\|(\d{3})/);return m?{x:+m[1],y:+m[2]}:null}function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function getServerYMD(){const tEl=$('#serverTime'),dEl=$('#serverDate');if(tEl&&dEl){const tp=tEl.textContent.trim().split(':').map(Number);const dp=dEl.textContent.trim().split('/').map(Number);if(tp.length===3&&dp.length===3)return{y:dp[2],mo:dp[1],d:dp[0],H:tp[0],Mi:tp[1],S:tp[2]}}const t=new Date();return{y:t.getFullYear(),mo:t.getMonth()+1,d:t.getDate(),H:t.getHours(),Mi:t.getMinutes(),S:t.getSeconds()}}
+function parseArrival(cell){if(!cell)return null;const txt=cell.textContent||"";const tm=txt.match(/(\d{1,2}):(\d{2}):(\d{2})/);if(!tm)return null;const HH=+tm[1],MMins=+tm[2],SS=+tm[3];const msEl=cell.querySelector(SEL.arrivalMs);const milli=msEl?parseInt(msEl.textContent.trim(),10):0;const base=txt.toLowerCase();const ymd=getServerYMD();let dt=new Date(ymd.y,ymd.mo-1,ymd.d,HH,MMins,SS,milli);if(base.includes('tomorrow'))dt=new Date(dt.getTime()+86400000);if(base.includes('yesterday'))dt=new Date(dt.getTime()-86400000);return dt.getTime()}
 
-function getServerYMD(){
-  const timeEl=$('#serverTime'), dateEl=$('#serverDate');
-  if(timeEl && dateEl){
-    const tparts=timeEl.textContent.trim().split(':').map(Number);
-    const dparts=dateEl.textContent.trim().split('/').map(Number); // 28/08/2025
-    if(tparts.length===3 && dparts.length===3){
-      return { y:dparts[2], mo:dparts[1], d:dparts[0], H:tparts[0], Mi:tparts[1], S:tparts[2] };
-    }
-  }
-  const t=new Date(); return { y:t.getFullYear(), mo:t.getMonth()+1, d:t.getDate(), H:t.getHours(), Mi:t.getMinutes(), S:t.getSeconds() };
-}
+const DEFAULT={spear:18*60,sword:22*60,heavy:11*60,archer:18*60};function unitSpeeds(){try{const ws=+window.game_data?.world_speed||1;const info=window.TW?.unit_info||{};const out={};['spear','sword','axe','archer','spy','light','heavy','ram','catapult','knight','snob'].forEach(k=>{const s=info?.[k]?.speed||DEFAULT[k]||18*60;out[k]=s/ws});return out}catch{return DEFAULT}}const SPEEDS=unitSpeeds();function secPerField(units){const xs=units.map(u=>SPEEDS[u]).filter(Boolean);return xs.length?Math.max(...xs):SPEEDS.spear}
 
-// ---- parseArrival (χωρίς 'm' μεταβλητές) ----
-function parseArrival(cell){
-  if(!cell) return null;
-  const txt = cell.textContent || "";
-  const timeMatch = txt.match(/(\d{1,2}):(\d{2}):(\d{2})/);
-  if(!timeMatch) return null;
-  const HH = Number(timeMatch[1]);
-  const MMins = Number(timeMatch[2]);
-  const SS = Number(timeMatch[3]);
-  const msEl = cell.querySelector(SEL.arrivalMs);
-  const milli = msEl ? parseInt(msEl.textContent.trim(), 10) : 0;
-
-  const baseLower = txt.toLowerCase();
-  const ymd = getServerYMD();
-  let dt = new Date(ymd.y, ymd.mo-1, ymd.d, HH, MMins, SS, milli);
-  if (baseLower.includes('tomorrow'))  dt = new Date(dt.getTime()+86400000);
-  if (baseLower.includes('yesterday')) dt = new Date(dt.getTime()-86400000);
-  return dt.getTime(); // σε ms (server time)
-}
-
-// ---------- speeds (sec/field), βραδύτερη μονάδα ----------
-const DEFAULT={spear:18*60,sword:22*60,heavy:11*60,archer:18*60};
-function unitSpeeds(){
-  try{
-    const ws=+window.game_data?.world_speed||1;
-    const info=window.TW?.unit_info||{};
-    const out={};
-    ['spear','sword','axe','archer','spy','light','heavy','ram','catapult','knight','snob']
-      .forEach(key=>{const secs=info?.[key]?.speed||DEFAULT[key]||18*60; out[key]=secs/ws;});
-    return out;
-  }catch{return DEFAULT;}
-}
-const SPEEDS=unitSpeeds();
-function secPerField(units){
-  const arr=units.map(u=>SPEEDS[u]).filter(Boolean);
-  return arr.length?Math.max(...arr):SPEEDS.spear;
-}
-
-// ---------- UI ----------
-function panel(){
-  let el=$('#dc-panel'); if(el) return el;
-  el=document.createElement('div'); el.id='dc-panel';
-  el.style.cssText='position:fixed;top:0;right:0;width:380px;height:100vh;background:#111;color:#eee;z-index:2147483647;display:flex;flex-direction:column;gap:8px;padding:12px;box-shadow:-6px 0 18px rgba(0,0,0,.5);font:14px system-ui,Arial';
-  el.innerHTML=`
-    <div style="display:flex;align-items:center;gap:8px">
-      <div style="font-weight:700;font-size:16px">Defense Cutter</div>
-      <button id="dc-load" style="margin-left:auto;padding:4px 8px;background:#333;color:#fff;border:1px solid #444;border-radius:6px">Load villages</button>
-    </div>
-    <div id="dc-info" style="opacity:.9"></div>
-    <div>
-      <label><input type="checkbox" data-u="spear" checked> spear</label>
-      <label><input type="checkbox" data-u="sword" checked> sword</label>
-      <label><input type="checkbox" data-u="heavy"> heavy</label>
-      <label><input type="checkbox" data-u="archer"> archer</label>
-    </div>
-    <div>Offset: <span id="dc-offv">0</span> ms</div>
-    <input id="dc-off" type="range" min="-500" max="500" step="1" value="0">
-    <div id="dc-vill" style="flex:1;overflow:auto;border:1px solid #333;padding:6px;border-radius:8px"></div>
-    <div id="dc-prev" style="font-weight:600"></div>
-    <button id="dc-open" style="padding:8px;background:#0a84ff;color:#fff;border:0;border-radius:8px">Άνοιγμα Rally/Confirm (lock)</button>
-    <div id="dc-jitter" style="opacity:.8"></div>
-    <div style="opacity:.7">Calibration/Dry-run: πάτα <b>Numpad +</b></div>
-  `;
-  document.body.appendChild(el);
-  return el;
-}
+function panel(){let el=$('#dc-panel');if(el)return el;el=document.createElement('div');el.id='dc-panel';el.style.cssText='position:fixed;top:0;right:0;width:380px;height:100vh;background:#111;color:#eee;z-index:2147483647;display:flex;flex-direction:column;gap:8px;padding:12px;box-shadow:-6px 0 18px rgba(0,0,0,.5);font:14px system-ui,Arial;pointer-events:auto';el.innerHTML=`<div style="display:flex;align-items:center;gap:8px"><div style="font-weight:700;font-size:16px">Defense Cutter</div><button id="dc-load" style="margin-left:auto;padding:4px 8px;background:#333;color:#fff;border:1px solid #444;border-radius:6px" type="button">Load villages</button></div><div id="dc-info" style="opacity:.9"></div><div><label><input type="checkbox" data-u="spear" checked> spear</label><label><input type="checkbox" data-u="sword" checked> sword</label><label><input type="checkbox" data-u="heavy"> heavy</label><label><input type="checkbox" data-u="archer"> archer</label></div><div>Offset: <span id="dc-offv">0</span> ms</div><input id="dc-off" type="range" min="-500" max="500" step="1" value="0"><div id="dc-vill" style="flex:1;overflow:auto;border:1px solid #333;padding:6px;border-radius:8px"></div><div id="dc-prev" style="font-weight:600"></div><button id="dc-open" style="padding:8px;background:#0a84ff;color:#fff;border:0;border-radius:8px" type="button">Άνοιγμα Rally/Confirm (lock)</button><div id="dc-jitter" style="opacity:.8"></div><div style="opacity:.7">Calibration/Dry-run: πάτα <b>Numpad +</b></div>`;document.body.appendChild(el);/* hook slider immediately */const sl=$('#dc-off');const offV=$('#dc-offv');sl.addEventListener('input',e=>{state.offset=+e.target.value;offV.textContent=state.offset;renderVillages();renderPreview()},{passive:true});/* hook unit checks immediately */$$('#dc-panel input[data-u]').forEach(c=>c.addEventListener('change',()=>{state.units=$$('#dc-panel input[data-u]:checked').map(x=>x.dataset.u);renderVillages();renderPreview()}));attachLoadBtn();return el}
 
 const state={target:null,arrival:null,offset:0,units:['spear','sword'],sendAt:null,chosen:null,villages:[]};
 
-function mountCutButtons(){
-  $$(SEL.incomingRow).forEach(row=>{
-    if(row.querySelector('.dc-btn')) return;
-    const host=row.querySelector(SEL.addBtnHost)||row.lastElementChild||row;
-    const b=document.createElement('button'); b.className='dc-btn'; b.textContent='Κόψ’το';
-    b.style.cssText='padding:4px 8px;background:#222;color:#0f0;border:1px solid #444;border-radius:6px;cursor:pointer';
-    b.onclick=()=>pickRow(row);
-    host.appendChild(b);
-  });
-}
+function mountCutButtons(){$$(SEL.incomingRow).forEach(row=>{if(row.querySelector('.dc-btn'))return;const host=row.querySelector(SEL.addBtnHost)||row.lastElementChild||row;const b=document.createElement('button');b.className='dc-btn';b.textContent='Κόψ’το';b.type='button';b.style.cssText='padding:4px 8px;background:#222;color:#0f0;border:1px solid #444;border-radius:6px;cursor:pointer';b.addEventListener('click',ev=>{ev.preventDefault();ev.stopPropagation();pickRow(row)});host.appendChild(b)})}
 
-async function pickRow(row){
-  panel();
-  const destTxt=row.querySelector(SEL.destCell)?.textContent||'';
-  const target=parseCoords(destTxt);
-  const arrTs=parseArrival(row.querySelector(SEL.arrivalCell));
-  state.target=target; state.arrival=arrTs;
+async function pickRow(row){panel();const destTxt=row.querySelector(SEL.destCell)?.textContent||'';const target=parseCoords(destTxt);const arrTs=parseArrival(row.querySelector(SEL.arrivalCell));state.target=target;state.arrival=arrTs;$('#dc-info').textContent=target&&arrTs?`Προς ${target.x}|${target.y} — Άφιξη: ${new Date(arrTs).toLocaleTimeString()}.${String(arrTs%1000).padStart(3,'0')}`:'Δεν βρέθηκαν στόχος/ώρα';$('#dc-open').onclick=openChildFlow;const syncRes=await Clock.cal(6);$('#dc-jitter').textContent=`Clock jitter ≈ ±${Math.round(syncRes.jit)} ms`;renderVillages();renderPreview()}
 
-  $('#dc-info').textContent= target&&arrTs
-    ? `Προς ${target.x}|${target.y} — Άφιξη: ${new Date(arrTs).toLocaleTimeString()}.${String(arrTs%1000).padStart(3,'0')}`
-    : 'Δεν βρέθηκαν στόχος/ώρα';
+async function fetchHTML(url){const res=await fetch(url,{credentials:'same-origin'});const tx=await res.text();return new DOMParser().parseFromString(tx,'text/html')}
+function getUnitsOrder(){const list=(window.game_data?.units)||['spear','sword','axe','archer','spy','light','heavy','ram','catapult','knight','snob'];return list}
+function parseUnitsPage(doc){const tb=doc.querySelector('table.vis.overview_table');if(!tb)return[];const order=getUnitsOrder();const groups=Array.from(tb.querySelectorAll('tbody.row_marker'));const out=[];groups.forEach(group=>{const linkVillage=group.querySelector('a[href*="screen=overview"][href*="village="]')||group.querySelector('a[href*="village="]');const coords=parseCoords(linkVillage?.textContent||'');const troopsLink=group.querySelector('a[href*="screen=place"]');const href=troopsLink?.getAttribute('href')||'';const vid=(href.match(/village=(\d+)/)||[])[1];const trs=Array.from(group.querySelectorAll('tr'));let trAvail=trs.find(trNode=>/in village/i.test(trNode.textContent))||group.querySelector('tr:nth-of-type(2)');const cells=trAvail?Array.from(trAvail.querySelectorAll('td.unit-item')):[];const countsByUnit={};order.forEach((u,idx)=>{const td=cells[idx];const val=td?parseInt(td.textContent.trim(),10)||0:0;countsByUnit[u]=val});out.push({coords,vid,hrefToPlace:href,counts:{spear:countsByUnit.spear||0,sword:countsByUnit.sword||0,heavy:countsByUnit.heavy||0}})});return out.filter(v=>v.coords&&v.vid)}
+async function loadVillages(){const base=`/game.php?screen=overview_villages&mode=units&type=there`;const first=await fetchHTML(base);const pager=first.querySelector('#paged_view_content')||first;const pageLinks=Array.from(pager.querySelectorAll('a[href*="screen=overview_villages"][href*="mode=units"]')).map(a=>new URL(a.href,location.origin).href);const unique=[...new Set([new URL(base,location.origin).href,...pageLinks])].slice(0,30);let all=[];for(let i=0;i<unique.length;i++){try{const d=(i===0)?first:await fetchHTML(unique[i]);all=all.concat(parseUnitsPage(d))}catch{}await sleep(40)}sessionStorage.setItem('dc_villages',JSON.stringify(all));state.villages=all;renderVillages()}
+function attachLoadBtn(){const btn=$('#dc-load');if(!btn||btn.__dc_bound)return;btn.__dc_bound=true;btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();loadVillages().catch(()=>alert('Load villages: πρόβλημα φόρτωσης.'))})}
+try{const cached=sessionStorage.getItem('dc_villages');if(cached)state.villages=JSON.parse(cached)}catch{}
 
-  $('#dc-off').oninput=e=>{state.offset=+e.target.value; $('#dc-offv').textContent=state.offset; renderVillages(); renderPreview();}
-  $$('#dc-panel input[data-u]').forEach(c=>c.onchange=()=>{
-    state.units=$$('#dc-panel input[data-u]:checked').map(x=>x.dataset.u); renderVillages(); renderPreview();
-  });
-  $('#dc-open').onclick=openChildFlow;
+function renderVillages(){const box=$('#dc-vill');if(!box)return;box.innerHTML='';if(!state.target||!state.arrival){box.innerHTML='<div style="opacity:.7">Διάλεξε επίθεση για να δούμε χωριά.</div>';return}const spf=secPerField(state.units);const rows=state.villages.map(v=>{const df=dist(v.coords,state.target);const tsec=df*spf;const sendAt=state.arrival - tsec*1000 + state.offset;const can=Clock.now()<=sendAt;return {...v,df,tsec,sendAt,can}}).filter(x=>x.can).sort((a,b)=>a.tsec-b.tsec);if(!rows.length){box.innerHTML='<div style="opacity:.7">Κανένα χωριό δεν προλαβαίνει με τις τωρινές επιλογές.</div>';return}rows.forEach(r=>{const div=document.createElement('div');div.style.cssText='display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px;border-bottom:1px solid #333;cursor:pointer';div.innerHTML=`<div><div><b>${r.coords.x}|${r.coords.y}</b> · travel ${Math.round(r.tsec)}s</div><div style="opacity:.8">spear ${r.counts.spear} · sword ${r.counts.sword} · heavy ${r.counts.heavy}</div></div><div style="text-align:right"><div style="font-feature-settings:'tnum' 1">${new Date(r.sendAt).toLocaleTimeString()}.${String(r.sendAt%1000).padStart(3,'0')}</div><div style="opacity:.7">Send at</div></div>`;div.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();state.chosen=r;renderPreview()});box.appendChild(div)})}
+function renderPreview(){const p=$('#dc-prev');if(!p)return;if(!state.arrival){p.textContent='—';return}const sa=state.chosen?state.chosen.sendAt:(state.arrival+state.offset);p.textContent=`Target: ${new Date(state.arrival).toLocaleTimeString()}.${String(state.arrival%1000).padStart(3,'0')} | Send at: ${new Date(sa).toLocaleTimeString()}.${String(sa%1000).padStart(3,'0')}`}
 
-  const syncRes=await Clock.cal(6);
-  $('#dc-jitter').textContent=`Clock jitter ≈ ±${Math.round(syncRes.jit)} ms`;
+let child=null;async function openChildFlow(){if(!state.arrival){alert('Διάλεξε επίθεση πρώτα.');return}Beep.ping(.05,700);await Clock.cal(4);const sendAt=state.chosen?state.chosen.sendAt:(state.arrival+state.offset);state.sendAt=sendAt;sessionStorage.setItem('defcutter_sendAt',String(sendAt));bc.postMessage({kind:'schedule',sendAt});const url=state.chosen?.hrefToPlace||'/game.php?screen=place';child=window.open(url,'_blank','noopener');if(!child){alert('Pop-up blocked—επέτρεψέ το.');return}watchChild(sendAt)}
+function watchChild(targetMs){const reinject=()=>{try{if(!child||child.closed)return;const d=child.document;if(!d||d.readyState!=='complete')return;const s=d.createElement('script');s.textContent=`(function(){if(window.__dc_lock)return;window.__dc_lock=true;const sendSel='${SEL.sendBtn}';const target=${JSON.stringify(targetMs)};const offsetInj=${Clock.off};const srvNow=()=>performance.timeOrigin+performance.now()+offsetInj;function toClient(){return target-(performance.timeOrigin+performance.now()+offsetInj)}function label(mes){let el=document.getElementById('dc-lock-label');if(!el){el=document.createElement('div');el.id='dc-lock-label';el.style.cssText='position:fixed;bottom:12px;right:12px;background:#000;color:#fff;padding:6px 10px;border-radius:8px;z-index:2147483647';document.body.appendChild(el)}el.textContent=mes}function beep(){try{const c=new (AudioContext||webkitAudioContext)();const osc=c.createOscillator(),g=c.createGain();osc.connect(g);g.connect(c.destination);osc.frequency.value=1200;g.gain.value=.05;osc.start();setTimeout(()=>osc.stop(),60)}catch{}}function lock(){const btn=document.querySelector(sendSel);if(!btn){label('Βρες το Send/Support και ξαναφόρτωσε.');return}btn.disabled=true;btn.setAttribute('disabled','disabled');btn.style.outline='3px solid #f00';label('Locked…');setTimeout(()=>beep(),Math.max(0,toClient()-1000));setTimeout(()=>beep(),Math.max(0,toClient()-300));setTimeout(()=>beep(),Math.max(0,toClient()-100));const wait=Math.max(0,toClient()-120);setTimeout(async()=>{window.focus();btn.focus();const spinUntil=target-8;function raf(){if(srvNow()>=spinUntil)return Promise.resolve();return new Promise(r=>requestAnimationFrame(r)).then(raf)}await raf();while(srvNow()<target){}btn.disabled=false;btn.removeAttribute('disabled');btn.style.outline='3px solid #0f0';label('UNLOCK');beep()},wait)}window.addEventListener('pageshow',lock,{once:true});lock()})();`;d.documentElement.appendChild(s)}catch{}};const iv=setInterval(()=>{if(!child||child.closed){clearInterval(iv);return}try{if(child.document&&child.document.readyState==='complete')reinject()}catch{}},120)}
 
-  renderVillages(); renderPreview();
-}
+window.addEventListener('keydown',async e=>{if(e.code==='NumpadAdd'){e.preventDefault();panel();$('#dc-prev').textContent='Calibration…';await Clock.cal(6);const tgt=Clock.now()+2500;$('#dc-prev').textContent='Dry-run σε 2.5s';setTimeout(()=>Beep.ping(),1500);setTimeout(()=>Beep.ping(),2200);let b=$('#dc-dummy');if(!b){b=document.createElement('button');b.id='dc-dummy';b.textContent='DUMMY (locked)';b.style.cssText='position:fixed;bottom:12px;left:12px;padding:6px 10px;background:#333;color:#fff;border:0;border-radius:8px;z-index:2147483647';document.body.appendChild(b)}b.disabled=true;const srv=()=>Clock.now();const spin=tgt-8;(async()=>{while(srv()<spin){await new Promise(r=>requestAnimationFrame(r))}while(srv()<tgt){}b.disabled=false;b.textContent='DUMMY (UNLOCK)';Beep.ping(.06,1200)})()}},{passive:false});
 
-// ---------- villages loader (scrape units overview) ----------
-async function fetchHTML(url){
-  const res=await fetch(url,{credentials:'same-origin'}); const tx=await res.text();
-  return new DOMParser().parseFromString(tx,'text/html');
-}
-function getUnitsOrder(){
-  const list=(window.game_data?.units)||['spear','sword','axe','archer','spy','light','heavy','ram','catapult','knight','snob'];
-  return list;
-}
-function parseUnitsPage(doc){
-  const tb=doc.querySelector('table.vis.overview_table'); if(!tb) return [];
-  const order=getUnitsOrder();
-  const groups=Array.from(tb.querySelectorAll('tbody.row_marker'));
-  const out=[];
-  groups.forEach(group=>{
-    const linkVillage=group.querySelector('a[href*="screen=overview"][href*="village="]')||group.querySelector('a[href*="village="]');
-    const coords=parseCoords(linkVillage?.textContent||'');
-    const troopsLink=group.querySelector('a[href*="screen=place"]');
-    const href=tropsLinkSafe(troopsLink);
-    const vid=(href.match(/village=(\d+)/)||[])[1];
-
-    // "in village" row
-    const trs=Array.from(group.querySelectorAll('tr'));
-    let trAvail=trs.find(trNode=>/in village/i.test(trNode.textContent))||group.querySelector('tr:nth-of-type(2)');
-    const cells=trAvail?Array.from(trAvail.querySelectorAll('td.unit-item')):[];
-    const countsByUnit={};
-    order.forEach((unitKey,idx)=>{ const td=cells[idx]; const val=td?parseInt(td.textContent.trim(),10)||0:0; countsByUnit[unitKey]=val;});
-    out.push({
-      coords,
-      vid,
-      hrefToPlace:href,
-      counts:{spear:countsByUnit.spear||0,sword:countsByUnit.sword||0,heavy:countsByUnit.heavy||0}
-    });
-  });
-  return out.filter(v=>v.coords&&v.vid);
-}
-function tropsLinkSafe(a){ return a?.getAttribute('href')||''; }
-
-async function loadVillages(){
-  const base=`/game.php?screen=overview_villages&mode=units&type=there`;
-  const first=await fetchHTML(base);
-  const pager=first.querySelector('#paged_view_content')||first;
-  const pageLinks=Array.from(pager.querySelectorAll('a[href*="screen=overview_villages"][href*="mode=units"]')).map(a=>new URL(a.href,location.origin).href);
-  const unique=[...new Set([new URL(base,location.origin).href, ...pageLinks])].slice(0,30);
-  let all=[];
-  for(let idx=0; idx<unique.length; idx++){
-    try{ const d=(idx===0)?first:await fetchHTML(unique[idx]); all=all.concat(parseUnitsPage(d)); }catch{}
-    await sleep(40);
-  }
-  sessionStorage.setItem('dc_villages',JSON.stringify(all));
-  state.villages=all;
-  renderVillages();
-}
-
-function attachLoadBtn(){
-  const btn=$('#dc-load');
-  if(!btn || btn.__dc_bound) return;
-  btn.__dc_bound=true;
-  btn.addEventListener('click', e=>{ e.preventDefault(); loadVillages().catch(()=>alert('Load villages: πρόβλημα φόρτωσης.')); });
-}
-
-// cache villages (session)
-try{ const cached=sessionStorage.getItem('dc_villages'); if(cached) state.villages=JSON.parse(cached);}catch{}
-
-// ---------- render villages (όσα προλαβαίνουν) ----------
-function renderVillages(){
-  const box=$('#dc-vill'); if(!box) return;
-  box.innerHTML='';
-  if(!state.target||!state.arrival){ box.innerHTML='<div style="opacity:.7">Διάλεξε επίθεση για να δούμε χωριά.</div>'; return; }
-  const spf=secPerField(state.units); // sec/field της βραδύτερης
-
-  const rows=state.villages.map(v=>{
-    const distFields=dist(v.coords,state.target);
-    const tsec=distFields*spf;
-    const sendAt=state.arrival - tsec*1000 + state.offset;
-    const can=Clock.now() <= sendAt; // προλαβαίνει
-    return {...v,distFields,tsec,sendAt,can};
-  }).filter(x=>x.can).sort((a,b)=>a.tsec-b.tsec); // κοντινότερα πρώτα
-
-  if(!rows.length){ box.innerHTML='<div style="opacity:.7">Κανένα χωριό δεν προλαβαίνει με τις τωρινές επιλογές.</div>'; return; }
-
-  rows.forEach(r=>{
-    const div=document.createElement('div');
-    div.style.cssText='display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px;border-bottom:1px solid #333;cursor:pointer';
-    div.innerHTML=`
-      <div>
-        <div><b>${r.coords.x}|${r.coords.y}</b> · travel ${Math.round(r.tsec)}s</div>
-        <div style="opacity:.8">spear ${r.counts.spear} · sword ${r.counts.sword} · heavy ${r.counts.heavy}</div>
-      </div>
-      <div style="text-align:right">
-        <div style="font-feature-settings:'tnum' 1">${new Date(r.sendAt).toLocaleTimeString()}.${String(r.sendAt%1000).padStart(3,'0')}</div>
-        <div style="opacity:.7">Send at</div>
-      </div>
-    `;
-    div.onclick=()=>{ state.chosen=r; renderPreview(); };
-    box.appendChild(div);
-  });
-}
-
-function renderPreview(){
-  const p=$('#dc-prev'); if(!p) return;
-  if(!state.arrival){ p.textContent='—'; return; }
-  const sa=state.chosen?state.chosen.sendAt:(state.arrival+state.offset);
-  p.textContent=`Target: ${new Date(state.arrival).toLocaleTimeString()}.${String(state.arrival%1000).padStart(3,'0')} | Send at: ${new Date(sa).toLocaleTimeString()}.${String(sa%1000).padStart(3,'0')}`;
-}
-
-// ---------- child tab + lock across redirects ----------
-let child=null;
-async function openChildFlow(){
-  if(!state.arrival){ alert('Διάλεξε επίθεση πρώτα.'); return; }
-  Beep.ping(.05,700);
-  await Clock.cal(4);
-  const sendAt = state.chosen? state.chosen.sendAt : (state.arrival + state.offset);
-  state.sendAt=sendAt;
-  sessionStorage.setItem('defcutter_sendAt',String(sendAt));
-  bc.postMessage({kind:'schedule',sendAt});
-
-  const url = state.chosen?.hrefToPlace || '/game.php?screen=place';
-  child=window.open(url,'_blank','noopener'); if(!child){ alert('Pop-up blocked—επέτρεψέ το.'); return; }
-  watchChild(sendAt);
-}
-
-function watchChild(targetMs){
-  const reinject=()=>{
-    try{
-      if(!child||child.closed) return;
-      const d=child.document; if(!d||d.readyState!=='complete') return;
-      const s=d.createElement('script');
-      s.textContent=`(function(){
-        if(window.__dc_lock)return; window.__dc_lock=true;
-        const sendSel='${SEL.sendBtn}'; const target=${JSON.stringify(targetMs)};
-        const offsetInj=${Clock.off};
-        const srvNow=()=>performance.timeOrigin+performance.now()+offsetInj;
-        function toClient(){return target-(performance.timeOrigin+performance.now()+offsetInj);}
-        function label(mes){let el=document.getElementById('dc-lock-label'); if(!el){el=document.createElement('div');el.id='dc-lock-label';el.style.cssText='position:fixed;bottom:12px;right:12px;background:#000;color:#fff;padding:6px 10px;border-radius:8px;z-index:2147483647';document.body.appendChild(el);} el.textContent=mes;}
-        function beep(){try{const c=new (AudioContext||webkitAudioContext)();const osc=c.createOscillator(),g=c.createGain();osc.connect(g);g.connect(c.destination);osc.frequency.value=1200;g.gain.value=.05;osc.start();setTimeout(()=>osc.stop(),60);}catch{}}
-        function lock(){
-          const btn=document.querySelector(sendSel);
-          if(!btn){ label('Βρες το Send/Support και ξαναφόρτωσε.'); return; }
-          btn.disabled=true; btn.setAttribute('disabled','disabled'); btn.style.outline='3px solid #f00'; label('Locked…');
-          setTimeout(()=>beep(), Math.max(0,toClient()-1000));
-          setTimeout(()=>beep(), Math.max(0,toClient()-300));
-          setTimeout(()=>beep(), Math.max(0,toClient()-100));
-          const wait=Math.max(0,toClient()-120);
-          setTimeout(async()=>{
-            window.focus(); btn.focus();
-            const spinUntil=target-8;
-            function raf(){ if(srvNow()>=spinUntil) return Promise.resolve(); return new Promise(r=>requestAnimationFrame(r)).then(raf); }
-            await raf();
-            while(srvNow()<target){}  // short busy-wait για μέγιστη ακρίβεια
-            btn.disabled=false; btn.removeAttribute('disabled'); btn.style.outline='3px solid #0f0'; label('UNLOCK'); beep();
-          }, wait);
-        }
-        window.addEventListener('pageshow', lock, {once:true});
-        lock();
-      })();`;
-      d.documentElement.appendChild(s);
-    }catch{}
-  };
-  const iv=setInterval(()=>{
-    if(!child||child.closed){ clearInterval(iv); return; }
-    try{ if(child.document && child.document.readyState==='complete') reinject(); }catch{}
-  },120);
-}
-
-// ---------- dry-run (Numpad +) ----------
-window.addEventListener('keydown',async e=>{
-  if(e.code==='NumpadAdd'){ e.preventDefault(); panel(); $('#dc-prev').textContent='Calibration…'; await Clock.cal(6);
-    const tgt=Clock.now()+2500; $('#dc-prev').textContent='Dry-run σε 2.5s';
-    setTimeout(()=>Beep.ping(),1500); setTimeout(()=>Beep.ping(),2200);
-    let b=$('#dc-dummy'); if(!b){ b=document.createElement('button'); b.id='dc-dummy'; b.textContent='DUMMY (locked)'; b.style.cssText='position:fixed;bottom:12px;left:12px;padding:6px 10px;background:#333;color:#fff;border:0;border-radius:8px;z-index:2147483647'; document.body.appendChild(b);}
-    b.disabled=true;
-    const srv=()=>Clock.now(); const spin=tgt-8;
-    (async()=>{ while(srv()<spin){ await new Promise(r=>requestAnimationFrame(r)); } while(srv()<tgt){} b.disabled=false; b.textContent='DUMMY (UNLOCK)'; Beep.ping(.06,1200); })();
-  }
-},{passive:false});
-
-// ---------- boot ----------
-(async function(){
-  panel(); attachLoadBtn();
-  try{ await Clock.cal(6);}catch{}
-  mountCutButtons();
-  attachLoadBtn();
-})();
- /* ===== /Defense Cutter ===== */})();
+(async function(){panel();try{await Clock.cal(6)}catch{}mountCutButtons();attachLoadBtn()})();
+})(); 
