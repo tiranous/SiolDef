@@ -1,4 +1,4 @@
-javascript:(()=>{/* ===== Defense Cutter — MVP v2.1 ===== */
+javascript:(()=>{/* ===== Defense Cutter — MVP v2.2 (no 'm' vars) ===== */
 
 const SEL = {
   // Incomings
@@ -44,39 +44,44 @@ const Clock=(()=>{let off=0,jit=0,ew=null;const alpha=.30;
 })();
 
 // ---------- audio ----------
-const Beep=(()=>{let ctx;function ping(d=.06,f=880){try{ctx=ctx||new (AudioContext||webkitAudioContext)();const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.value=f;g.gain.value=.05;o.start();setTimeout(()=>o.stop(),d*1000);}catch{}}return{ping}})();
+const Beep=(()=>{let ctx;function ping(d=.06,f=880){try{ctx=ctx||new (AudioContext||webkitAudioContext)();const osc=ctx.createOscillator(),gain=ctx.createGain();osc.connect(gain);gain.connect(ctx.destination);osc.frequency.value=f;gain.gain.value=.05;osc.start();setTimeout(()=>osc.stop(),d*1000);}catch{}}return{ping}})();
 
 // ---------- parse helpers ----------
-function parseCoords(s){const m=String(s).match(/(\d{3})\|(\d{3})/);return m?{x:+m[1],y:+m[2]}:null;}
+function parseCoords(str){
+  const matchCoords = String(str).match(/(\d{3})\|(\d{3})/);
+  return matchCoords ? {x:+matchCoords[1], y:+matchCoords[2]} : null;
+}
 function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
 
 function getServerYMD(){
   const timeEl=$('#serverTime'), dateEl=$('#serverDate');
   if(timeEl && dateEl){
-    const parts=timeEl.textContent.trim().split(':').map(Number);
+    const tparts=timeEl.textContent.trim().split(':').map(Number);
     const dparts=dateEl.textContent.trim().split('/').map(Number); // 28/08/2025
-    if(parts.length===3 && dparts.length===3){
-      return { y:dparts[2], mo:dparts[1], d:dparts[0], H:parts[0], Mi:parts[1], S:parts[2] };
+    if(tparts.length===3 && dparts.length===3){
+      return { y:dparts[2], mo:dparts[1], d:dparts[0], H:tparts[0], Mi:tparts[1], S:tparts[2] };
     }
   }
   const t=new Date(); return { y:t.getFullYear(), mo:t.getMonth()+1, d:t.getDate(), H:t.getHours(), Mi:t.getMinutes(), S:t.getSeconds() };
 }
 
-// ---- FIXED parseArrival (καμία σύγκρουση ονομάτων) ----
+// ---- parseArrival (χωρίς 'm' μεταβλητές) ----
 function parseArrival(cell){
   if(!cell) return null;
   const txt = cell.textContent || "";
   const timeMatch = txt.match(/(\d{1,2}):(\d{2}):(\d{2})/);
   if(!timeMatch) return null;
-  const [HH, MM, SS] = timeMatch.slice(1).map(Number);
+  const HH = Number(timeMatch[1]);
+  const MMins = Number(timeMatch[2]);
+  const SS = Number(timeMatch[3]);
   const msEl = cell.querySelector(SEL.arrivalMs);
-  const ms = msEl ? parseInt(msEl.textContent.trim(), 10) : 0;
+  const milli = msEl ? parseInt(msEl.textContent.trim(), 10) : 0;
 
-  const base = txt.toLowerCase();
+  const baseLower = txt.toLowerCase();
   const ymd = getServerYMD();
-  let dt = new Date(ymd.y, ymd.mo-1, ymd.d, HH, MM, SS, ms);
-  if (base.includes('tomorrow'))  dt = new Date(dt.getTime()+86400000);
-  if (base.includes('yesterday')) dt = new Date(dt.getTime()-86400000);
+  let dt = new Date(ymd.y, ymd.mo-1, ymd.d, HH, MMins, SS, milli);
+  if (baseLower.includes('tomorrow'))  dt = new Date(dt.getTime()+86400000);
+  if (baseLower.includes('yesterday')) dt = new Date(dt.getTime()-86400000);
   return dt.getTime(); // σε ms (server time)
 }
 
@@ -88,12 +93,15 @@ function unitSpeeds(){
     const info=window.TW?.unit_info||{};
     const out={};
     ['spear','sword','axe','archer','spy','light','heavy','ram','catapult','knight','snob']
-      .forEach(k=>{const s=info?.[k]?.speed||DEFAULT[k]||18*60; out[k]=s/ws;});
+      .forEach(key=>{const secs=info?.[key]?.speed||DEFAULT[key]||18*60; out[key]=secs/ws;});
     return out;
   }catch{return DEFAULT;}
 }
 const SPEEDS=unitSpeeds();
-function secPerField(units){const xs=units.map(u=>SPEEDS[u]).filter(Boolean);return xs.length?Math.max(...xs):SPEEDS.spear;}
+function secPerField(units){
+  const arr=units.map(u=>SPEEDS[u]).filter(Boolean);
+  return arr.length?Math.max(...arr):SPEEDS.spear;
+}
 
 // ---------- UI ----------
 function panel(){
@@ -154,8 +162,8 @@ async function pickRow(row){
   });
   $('#dc-open').onclick=openChildFlow;
 
-  const {jit}=await Clock.cal(6);
-  $('#dc-jitter').textContent=`Clock jitter ≈ ±${Math.round(jit)} ms`;
+  const syncRes=await Clock.cal(6);
+  $('#dc-jitter').textContent=`Clock jitter ≈ ±${Math.round(syncRes.jit)} ms`;
 
   renderVillages(); renderPreview();
 }
@@ -166,30 +174,37 @@ async function fetchHTML(url){
   return new DOMParser().parseFromString(tx,'text/html');
 }
 function getUnitsOrder(){
-  const u=(window.game_data?.units)||['spear','sword','axe','archer','spy','light','heavy','ram','catapult','knight','snob'];
-  return u;
+  const list=(window.game_data?.units)||['spear','sword','axe','archer','spy','light','heavy','ram','catapult','knight','snob'];
+  return list;
 }
 function parseUnitsPage(doc){
   const tb=doc.querySelector('table.vis.overview_table'); if(!tb) return [];
   const order=getUnitsOrder();
   const groups=Array.from(tb.querySelectorAll('tbody.row_marker'));
   const out=[];
-  groups.forEach(g=>{
-    const a=g.querySelector('a[href*="screen=overview"][href*="village="]')||g.querySelector('a[href*="village="]');
-    const coords=parseCoords(a?.textContent||'');
-    const troopsLink=g.querySelector('a[href*="screen=place"]');
-    const href=troopsLink?.getAttribute('href')||'';
+  groups.forEach(group=>{
+    const linkVillage=group.querySelector('a[href*="screen=overview"][href*="village="]')||group.querySelector('a[href*="village="]');
+    const coords=parseCoords(linkVillage?.textContent||'');
+    const troopsLink=group.querySelector('a[href*="screen=place"]');
+    const href=tropsLinkSafe(troopsLink);
     const vid=(href.match(/village=(\d+)/)||[])[1];
 
-    // "in village" row (όπου δείχνει τα διαθέσιμα στο χωριό)
-    let tr=Array.from(g.querySelectorAll('tr')).find(tr=>/in village/i.test(tr.textContent))||g.querySelector('tr:nth-of-type(2)');
-    const cells=tr?Array.from(tr.querySelectorAll('td.unit-item')):[];
+    // "in village" row
+    const trs=Array.from(group.querySelectorAll('tr'));
+    let trAvail=trs.find(trNode=>/in village/i.test(trNode.textContent))||group.querySelector('tr:nth-of-type(2)');
+    const cells=trAvail?Array.from(trAvail.querySelectorAll('td.unit-item')):[];
     const countsByUnit={};
-    order.forEach((u,i)=>{ const td=cells[i]; const v=td?parseInt(td.textContent.trim(),10)||0:0; countsByUnit[u]=v;});
-    out.push({coords,vid,hrefToPlace:href,counts:{spear:countsByUnit.spear||0,sword:countsByUnit.sword||0,heavy:countsByUnit.heavy||0}});
+    order.forEach((unitKey,idx)=>{ const td=cells[idx]; const val=td?parseInt(td.textContent.trim(),10)||0:0; countsByUnit[unitKey]=val;});
+    out.push({
+      coords,
+      vid,
+      hrefToPlace:href,
+      counts:{spear:countsByUnit.spear||0,sword:countsByUnit.sword||0,heavy:countsByUnit.heavy||0}
+    });
   });
   return out.filter(v=>v.coords&&v.vid);
 }
+function tropsLinkSafe(a){ return a?.getAttribute('href')||''; }
 
 async function loadVillages(){
   const base=`/game.php?screen=overview_villages&mode=units&type=there`;
@@ -198,8 +213,8 @@ async function loadVillages(){
   const pageLinks=Array.from(pager.querySelectorAll('a[href*="screen=overview_villages"][href*="mode=units"]')).map(a=>new URL(a.href,location.origin).href);
   const unique=[...new Set([new URL(base,location.origin).href, ...pageLinks])].slice(0,30);
   let all=[];
-  for(let i=0;i<unique.length;i++){
-    try{ const d=(i===0)?first:await fetchHTML(unique[i]); all=all.concat(parseUnitsPage(d)); }catch{}
+  for(let idx=0; idx<unique.length; idx++){
+    try{ const d=(idx===0)?first:await fetchHTML(unique[idx]); all=all.concat(parseUnitsPage(d)); }catch{}
     await sleep(40);
   }
   sessionStorage.setItem('dc_villages',JSON.stringify(all));
@@ -225,11 +240,11 @@ function renderVillages(){
   const spf=secPerField(state.units); // sec/field της βραδύτερης
 
   const rows=state.villages.map(v=>{
-    const d=dist(v.coords,state.target);
-    const tsec=d*spf;
+    const distFields=dist(v.coords,state.target);
+    const tsec=distFields*spf;
     const sendAt=state.arrival - tsec*1000 + state.offset;
     const can=Clock.now() <= sendAt; // προλαβαίνει
-    return {...v,d,tsec,sendAt,can};
+    return {...v,distFields,tsec,sendAt,can};
   }).filter(x=>x.can).sort((a,b)=>a.tsec-b.tsec); // κοντινότερα πρώτα
 
   if(!rows.length){ box.innerHTML='<div style="opacity:.7">Κανένα χωριό δεν προλαβαίνει με τις τωρινές επιλογές.</div>'; return; }
@@ -284,11 +299,11 @@ function watchChild(targetMs){
       s.textContent=`(function(){
         if(window.__dc_lock)return; window.__dc_lock=true;
         const sendSel='${SEL.sendBtn}'; const target=${JSON.stringify(targetMs)};
-        const off=${Clock.off};
-        const srvNow=()=>performance.timeOrigin+performance.now()+off;
-        function toClient(){return target-(performance.timeOrigin+performance.now()+off);}
-        function label(m){let el=document.getElementById('dc-lock-label'); if(!el){el=document.createElement('div');el.id='dc-lock-label';el.style.cssText='position:fixed;bottom:12px;right:12px;background:#000;color:#fff;padding:6px 10px;border-radius:8px;z-index:2147483647';document.body.appendChild(el);} el.textContent=m;}
-        function beep(){try{const c=new (AudioContext||webkitAudioContext)();const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=1200;g.gain.value=.05;o.start();setTimeout(()=>o.stop(),60);}catch{}}
+        const offsetInj=${Clock.off};
+        const srvNow=()=>performance.timeOrigin+performance.now()+offsetInj;
+        function toClient(){return target-(performance.timeOrigin+performance.now()+offsetInj);}
+        function label(mes){let el=document.getElementById('dc-lock-label'); if(!el){el=document.createElement('div');el.id='dc-lock-label';el.style.cssText='position:fixed;bottom:12px;right:12px;background:#000;color:#fff;padding:6px 10px;border-radius:8px;z-index:2147483647';document.body.appendChild(el);} el.textContent=mes;}
+        function beep(){try{const c=new (AudioContext||webkitAudioContext)();const osc=c.createOscillator(),g=c.createGain();osc.connect(g);g.connect(c.destination);osc.frequency.value=1200;g.gain.value=.05;osc.start();setTimeout(()=>osc.stop(),60);}catch{}}
         function lock(){
           const btn=document.querySelector(sendSel);
           if(!btn){ label('Βρες το Send/Support και ξαναφόρτωσε.'); return; }
