@@ -1,21 +1,21 @@
-javascript:(()=>{/* ===== Defense Cutter — MVP v2 ===== */
+javascript:(()=>{/* ===== Defense Cutter — MVP v2.1 ===== */
 
-const SEL={
+const SEL = {
   // Incomings
-  incomingRow:'#incomings_table tr.nowrap',
-  destCell:'td:nth-child(2)',            // "(513|369) ..."
-  arrivalCell:'td:nth-child(6)',         // "today at 21:44:20:" + <span class="grey small">159</span>
-  arrivalMs:'.grey.small',               // τα ms
-  addBtnHost:'td:last-child',
+  incomingRow: '#incomings_table tr.nowrap',
+  destCell: 'td:nth-child(2)',           // "(513|369) ..."
+  arrivalCell: 'td:nth-child(6)',        // "today at 21:44:20:" + <span class="grey small">159</span>
+  arrivalMs: '.grey.small',              // μόνο τα ms
+  addBtnHost: 'td:last-child',
   // Confirm
-  sendBtn:'#troop_confirm_submit'
+  sendBtn: '#troop_confirm_submit'
 };
 
 // ---------- helpers ----------
-const $=(s,d=document)=>d.querySelector(s);
-const $$=(s,d=document)=>Array.from(d.querySelectorAll(s));
-const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-const bc=new BroadcastChannel('defcutter');
+const $  = (s,d=document)=>d.querySelector(s);
+const $$ = (s,d=document)=>Array.from(d.querySelectorAll(s));
+const sleep = ms=>new Promise(r=>setTimeout(r,ms));
+const bc = new BroadcastChannel('defcutter');
 
 // ---------- clock sync (NTP-like) ----------
 const Clock=(()=>{let off=0,jit=0,ew=null;const alpha=.30;
@@ -25,21 +25,22 @@ const Clock=(()=>{let off=0,jit=0,ew=null;const alpha=.30;
     const t1=performance.now();
     const date=r.headers.get('Date'); if(!date) throw 0;
     const srv=Date.parse(date), rtt=t1-t0;
-    const clientAtMid=performance.timeOrigin+t1;
-    const est=srv+rtt/2;
-    return {off:est-clientAtMid, rtt};
+    const clientAtRecv=performance.timeOrigin+t1;
+    const est=srv + rtt/2; // mid-flight
+    return {off:est-clientAtRecv, rtt};
   }
   async function calibrate(n=6){
     const xs=[];
-    for(let i=0;i<n;i++){try{xs.push(await sample())}catch{} await sleep(60+Math.random()*40)}
+    for(let i=0;i<n;i++){ try{ xs.push(await sample()); }catch{} await sleep(60+Math.random()*40); }
     xs.sort((a,b)=>a.rtt-b.rtt);
     const keep=xs.slice(0,Math.max(2,Math.ceil(xs.length*.7)));
     const o=keep.reduce((a,x)=>a+x.off,0)/keep.length;
     const r=keep.reduce((a,x)=>a+x.rtt,0)/keep.length;
-    ew=ew==null?o:alpha*o+(1-alpha)*ew; off=ew; jit=r/2; return {off,jit};
+    ew = (ew==null)? o : (alpha*o + (1-alpha)*ew);
+    off=ew; jit=r/2; return {off,jit};
   }
   const srvNow=()=>performance.timeOrigin+performance.now()+off;
-  return{cal:calibrate, now:srvNow, get off(){return off}, get jit(){return jit}};
+  return { cal:calibrate, now:srvNow, get off(){return off}, get jit(){return jit} };
 })();
 
 // ---------- audio ----------
@@ -48,32 +49,35 @@ const Beep=(()=>{let ctx;function ping(d=.06,f=880){try{ctx=ctx||new (AudioConte
 // ---------- parse helpers ----------
 function parseCoords(s){const m=String(s).match(/(\d{3})\|(\d{3})/);return m?{x:+m[1],y:+m[2]}:null;}
 function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+
 function getServerYMD(){
-  // TW συνήθως έχει #serverTime / #serverDate. fallback: Clock.now()
   const timeEl=$('#serverTime'), dateEl=$('#serverDate');
-  if(timeEl&&dateEl){
-    const [H,M,S]=timeEl.textContent.trim().split(':').map(Number);
-    const [d,m,y]=dateEl.textContent.trim().split('/').map(Number); // 28/08/2025
-    return {y,m,d,H,M,S};
+  if(timeEl && dateEl){
+    const parts=timeEl.textContent.trim().split(':').map(Number);
+    const dparts=dateEl.textContent.trim().split('/').map(Number); // 28/08/2025
+    if(parts.length===3 && dparts.length===3){
+      return { y:dparts[2], mo:dparts[1], d:dparts[0], H:parts[0], Mi:parts[1], S:parts[2] };
+    }
   }
-  const t=new Date(Clock.now());
-  return {y:t.getFullYear(),m:t.getMonth()+1,d:t.getDate(),H:t.getHours(),M:t.getMinutes(),S:t.getSeconds()};
+  const t=new Date(); return { y:t.getFullYear(), mo:t.getMonth()+1, d:t.getDate(), H:t.getHours(), Mi:t.getMinutes(), S:t.getSeconds() };
 }
+
+// ---- FIXED parseArrival (καμία σύγκρουση ονομάτων) ----
 function parseArrival(cell){
   if(!cell) return null;
-  const txt=cell.textContent;
-  const m=txt.match(/(\d{1,2}):(\d{2}):(\d{2})/);
-  if(!m) return null;
-  const [H,M,S]=m.slice(1).map(Number);
-  const msEl=$(SEL.arrivalMs,cell); const ms=msEl?parseInt(msEl.textContent.trim(),10):0;
+  const txt = cell.textContent || "";
+  const timeMatch = txt.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+  if(!timeMatch) return null;
+  const [HH, MM, SS] = timeMatch.slice(1).map(Number);
+  const msEl = cell.querySelector(SEL.arrivalMs);
+  const ms = msEl ? parseInt(msEl.textContent.trim(), 10) : 0;
 
-  // today/tomorrow
-  const base=txt.toLowerCase();
-  const {y,m,d}=getServerYMD();
-  let dt=new Date(y, m-1, d, H, M, S, ms);
-  if(/tomorrow/.test(base)) dt=new Date(dt.getTime()+86400000);
-  if(/yesterday/.test(base)) dt=new Date(dt.getTime()-86400000);
-  return dt.getTime(); // server ms
+  const base = txt.toLowerCase();
+  const ymd = getServerYMD();
+  let dt = new Date(ymd.y, ymd.mo-1, ymd.d, HH, MM, SS, ms);
+  if (base.includes('tomorrow'))  dt = new Date(dt.getTime()+86400000);
+  if (base.includes('yesterday')) dt = new Date(dt.getTime()-86400000);
+  return dt.getTime(); // σε ms (server time)
 }
 
 // ---------- speeds (sec/field), βραδύτερη μονάδα ----------
@@ -120,7 +124,7 @@ function panel(){
   return el;
 }
 
-const state={target:null,arrival:null,offset:0,units:['spear','sword'],sendAt:null,chosen:null,villages:[],unitsOrder:[]};
+const state={target:null,arrival:null,offset:0,units:['spear','sword'],sendAt:null,chosen:null,villages:[]};
 
 function mountCutButtons(){
   $$(SEL.incomingRow).forEach(row=>{
@@ -159,32 +163,28 @@ async function pickRow(row){
 // ---------- villages loader (scrape units overview) ----------
 async function fetchHTML(url){
   const res=await fetch(url,{credentials:'same-origin'}); const tx=await res.text();
-  const doc=new DOMParser().parseFromString(tx,'text/html'); return doc;
+  return new DOMParser().parseFromString(tx,'text/html');
 }
-// χαρτογράφηση της σειράς μονάδων με βάση game_data.units
 function getUnitsOrder(){
   const u=(window.game_data?.units)||['spear','sword','axe','archer','spy','light','heavy','ram','catapult','knight','snob'];
   return u;
 }
-// parse ενός page
 function parseUnitsPage(doc){
   const tb=doc.querySelector('table.vis.overview_table'); if(!tb) return [];
-  const order=getUnitsOrder(); // σειρά στη γραμμή "in village"
+  const order=getUnitsOrder();
   const groups=Array.from(tb.querySelectorAll('tbody.row_marker'));
   const out=[];
   groups.forEach(g=>{
-    // link με coords
     const a=g.querySelector('a[href*="screen=overview"][href*="village="]')||g.querySelector('a[href*="village="]');
     const coords=parseCoords(a?.textContent||'');
-    // Action: Troops -> παίρνω village id/URL προς place
     const troopsLink=g.querySelector('a[href*="screen=place"]');
     const href=troopsLink?.getAttribute('href')||'';
     const vid=(href.match(/village=(\d+)/)||[])[1];
-    // "in village" row: συνήθως 2ο tr
+
+    // "in village" row (όπου δείχνει τα διαθέσιμα στο χωριό)
     let tr=Array.from(g.querySelectorAll('tr')).find(tr=>/in village/i.test(tr.textContent))||g.querySelector('tr:nth-of-type(2)');
     const cells=tr?Array.from(tr.querySelectorAll('td.unit-item')):[];
     const countsByUnit={};
-    // Αν δεν υπάρχουν όλα, γεμίζω 0
     order.forEach((u,i)=>{ const td=cells[i]; const v=td?parseInt(td.textContent.trim(),10)||0:0; countsByUnit[u]=v;});
     out.push({coords,vid,hrefToPlace:href,counts:{spear:countsByUnit.spear||0,sword:countsByUnit.sword||0,heavy:countsByUnit.heavy||0}});
   });
@@ -193,25 +193,28 @@ function parseUnitsPage(doc){
 
 async function loadVillages(){
   const base=`/game.php?screen=overview_villages&mode=units&type=there`;
-  const doc=await fetchHTML(base);
-  // Προσπαθώ να βρω σελιδοποίηση
-  const pager=doc.querySelector('#paged_view_content')||doc;
+  const first=await fetchHTML(base);
+  const pager=first.querySelector('#paged_view_content')||first;
   const pageLinks=Array.from(pager.querySelectorAll('a[href*="screen=overview_villages"][href*="mode=units"]')).map(a=>new URL(a.href,location.origin).href);
-  const unique=[...new Set([new URL(base,location.origin).href, ...pageLinks])].slice(0,20); // ασφάλεια
+  const unique=[...new Set([new URL(base,location.origin).href, ...pageLinks])].slice(0,30);
   let all=[];
-  for (let i=0;i<unique.length;i++){
-    try{ const d=(i===0)?doc:await fetchHTML(unique[i]); all=all.concat(parseUnitsPage(d)); }catch{}
+  for(let i=0;i<unique.length;i++){
+    try{ const d=(i===0)?first:await fetchHTML(unique[i]); all=all.concat(parseUnitsPage(d)); }catch{}
     await sleep(40);
   }
-  // cache σε sessionStorage
   sessionStorage.setItem('dc_villages',JSON.stringify(all));
   state.villages=all;
   renderVillages();
 }
 
-$('#dc-load')?.addEventListener('click', e=>{e.preventDefault(); loadVillages().catch(()=>alert('Load villages: πρόβλημα φόρτωσης.'));});
+function attachLoadBtn(){
+  const btn=$('#dc-load');
+  if(!btn || btn.__dc_bound) return;
+  btn.__dc_bound=true;
+  btn.addEventListener('click', e=>{ e.preventDefault(); loadVillages().catch(()=>alert('Load villages: πρόβλημα φόρτωσης.')); });
+}
 
-// αρχική ανάγνωση cache
+// cache villages (session)
 try{ const cached=sessionStorage.getItem('dc_villages'); if(cached) state.villages=JSON.parse(cached);}catch{}
 
 // ---------- render villages (όσα προλαβαίνουν) ----------
@@ -220,7 +223,7 @@ function renderVillages(){
   box.innerHTML='';
   if(!state.target||!state.arrival){ box.innerHTML='<div style="opacity:.7">Διάλεξε επίθεση για να δούμε χωριά.</div>'; return; }
   const spf=secPerField(state.units); // sec/field της βραδύτερης
-  // φτιάχνω λίστα με ταξίδι & sendAt
+
   const rows=state.villages.map(v=>{
     const d=dist(v.coords,state.target);
     const tsec=d*spf;
@@ -299,7 +302,7 @@ function watchChild(targetMs){
             const spinUntil=target-8;
             function raf(){ if(srvNow()>=spinUntil) return Promise.resolve(); return new Promise(r=>requestAnimationFrame(r)).then(raf); }
             await raf();
-            while(srvNow()<target){}
+            while(srvNow()<target){}  // short busy-wait για μέγιστη ακρίβεια
             btn.disabled=false; btn.removeAttribute('disabled'); btn.style.outline='3px solid #0f0'; label('UNLOCK'); beep();
           }, wait);
         }
@@ -329,9 +332,9 @@ window.addEventListener('keydown',async e=>{
 
 // ---------- boot ----------
 (async function(){
-  panel(); try{await Clock.cal(6);}catch{}
+  panel(); attachLoadBtn();
+  try{ await Clock.cal(6);}catch{}
   mountCutButtons();
-  // auto-wire Load villages button (αν το panel φτιάχτηκε πριν)
-  $('#dc-load')?.addEventListener('click', e=>{e.preventDefault(); loadVillages().catch(()=>alert('Load villages: πρόβλημα.'));});
+  attachLoadBtn();
 })();
-/* ===== /Defense Cutter ===== */})();
+ /* ===== /Defense Cutter ===== */})();
